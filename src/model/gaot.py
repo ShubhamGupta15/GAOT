@@ -274,7 +274,8 @@ class GAOT(nn.Module):
         decoder_nbrs : Optional[list] 
             Precomputed neighbors for decoder
         condition : Optional[float]
-            Conditioning value for the model
+            Conditioning value for the model. Please don't use this variable for any condition now. The interface is not stable and will be updated in the future.
+            Just concatenate the condition to the pndata.
 
         Returns
         -------

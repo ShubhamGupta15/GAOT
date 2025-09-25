@@ -30,7 +30,7 @@
     "dataset": {
         "name": "Poisson-Gauss",
         "metaname": "elliptic_pdes/Poisson-Gauss",
-        "base_path": "/cluster/work/math/camlab-data/rigno-data/unstructured/",
+        "base_path": "datasets/time_indep/",
         "train_size": 2048,
         "val_size": 128,
         "test_size": 256,
@@ -44,7 +44,7 @@
         "args": {
             "lr": 8e-4,
             "weight_decay": 1e-05,
-            "epoch": 1000,
+            "epoch": 100,
             "loss_scale": 1.0,
             "eval_every_eps": 2,
             "scheduler": "mix",

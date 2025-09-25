@@ -30,7 +30,7 @@
     "dataset": {
         "name": "Elasticity",
         "metaname": "elliptic_pdes/Elasticity",
-        "base_path": "/cluster/work/math/camlab-data/rigno-data/unstructured/",
+        "base_path": "datasets/time_indep/",
         "train_size": 1024,
         "val_size": 128,
         "test_size": 256,

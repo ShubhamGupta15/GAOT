@@ -6,6 +6,11 @@ This repository contains the official source code for the paper:
 For the optimized implementation of ultra-large 3D datasets with varying data resolution, e.g., DrivaerNet++, DrivaerML and NASA CRM, please refer to our other repository: [**GAOT3D**](https://github.com/Shizheng-Wen/GAOT-3D).
 
 ## :sparkles: Updates
+***25/09/2025***
+1. **GAOT has been accepted in NeurIPS 2025!** 🎉
+2. **Open-Source Dataset**: We have open-sourced our dataset on [Hugging Face](https://huggingface.co/datasets/shiwen0710/Datasets_for_GAOT). We suggest running the examples we provided here to better understand the setup of the code before testing your own dataset.
+3. **To Be Updated**: The **GAOT3D** repo will be merged into this repo in the following weeks.
+
 
 ***13/08/2025***
 1.  **Unified Architecture**: Complete refactoring with unified trainers supporting both 2D/3D coordinates and fixed/variable coordinate modes
@@ -91,10 +96,10 @@ GAOT shows excellent throughput and scalability with increasing grid resolution 
 
 ## :floppy_disk: Dataset Setup
 
-Organize your datasets (typically in NetCDF `.nc` format) in a directory structure like the one shown below. You will specify `your_base_dataset_directory/` in the configuration files.
+Organize your datasets (typically in NetCDF `.nc` format) in a directory structure like the one shown below. Dataset related to this paper can be downloaded from the [HuggingFace Page](https://huggingface.co/datasets/shiwen0710/Datasets_for_GAOT). You will specify `your_base_dataset_directory/` in the configuration files. For example, put your data into the `datasets/` folder.
 
 ``` 
-.../your_base_dataset_directory/
+.../datasets/
     |__ time_indep/
         |__ Poisson-Gauss.nc
         |__ naca0012.nc
