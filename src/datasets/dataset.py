@@ -440,6 +440,23 @@ DATASET_METADATA = {
     global_mean=[0.0334376316],
     global_std=[0.1171879068],
   ),
+  'industrial_cfd/GIS-Thermal': Metadata(
+    periodic=False,
+    group_u='u',
+    group_c=None,
+    group_x='x',
+    type='gaot',
+    domain_x=([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]),
+    domain_t=(0, 599),
+    fix_x=False,
+    active_variables=[0],
+    chunked_variables=[0],
+    num_variable_chunks=1,
+    signed={'u': [False], 'c': None},
+    names={'u': ['temperature'], 'c': None},
+    global_mean=[0.0],
+    global_std=[1.0],
+  ),
   'hyperbolic_pdes/Wave-L-Sines': Metadata(
     periodic=False,
     group_u='u',
@@ -459,4 +476,3 @@ DATASET_METADATA = {
   ),
 
 }
-
