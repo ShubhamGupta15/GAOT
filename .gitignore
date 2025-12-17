@@ -32,6 +32,8 @@ Desktop.ini
 .database/
 .database_old/
 
+*.log
+
 config/*
 !config/examples
 slurmjob/**

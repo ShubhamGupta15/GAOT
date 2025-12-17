@@ -258,7 +258,7 @@ class SequentialDataProcessor(DataProcessor):
                 t_values=val_data['t'],
                 metadata=self.metadata,
                 max_time_diff=self.max_time_diff,
-                stepper_mode=self.stepper_mode,
+                stepper_mode=self.stepper_mode, 
                 stats=self.stats,
                 use_time_norm=self.use_time_norm,
                 is_variable_coords=is_variable_coords

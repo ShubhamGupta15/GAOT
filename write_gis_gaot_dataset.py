@@ -218,6 +218,7 @@ def _write_dataset(
     centers_raw: np.ndarray,
     scales: np.ndarray,
     append: bool = False,
+    engine: str | None = None,
 ):
     """Serialize arrays to NetCDF with light compression.
 
@@ -227,7 +228,8 @@ def _write_dataset(
     time_values = time_idx.astype(np.float32)
     ds_new = xr.Dataset()
     ds_new["u"] = (("sample", "time", "node", "channel"), u)
-    ds_new["x"] = (("sample", "node", "coord"), x)
+    # x uses a dummy time axis of length 1 to satisfy vx shape [sample, 1, node, coord]
+    ds_new["x"] = (("sample", "x_time", "node", "coord"), x)
     ds_new["coord_center"] = (("sample", "coord"), centers_raw.astype(np.float32))
     ds_new["coord_scale"] = (("sample",), scales.astype(np.float32))
     ds_new = ds_new.assign_coords(
@@ -247,21 +249,22 @@ def _write_dataset(
     ds_new.attrs["description"] = "GIS CFD temperatures downsampled for GAOT (vx mode)"
 
     # Pick a NetCDF backend; fall back to scipy without compression if others unavailable.
-    engine = None
-    if importlib.util.find_spec("netCDF4"):
-        engine = "netcdf4"
-    if importlib.util.find_spec("h5netcdf"):
-        engine = "h5netcdf"
-    else:
-        engine = "scipy"
-        LOGGER.warning("netCDF4/h5netcdf not found; using scipy backend without compression.")
+    if engine is None:
+        if importlib.util.find_spec("h5netcdf"):
+            engine = "h5netcdf"
+        elif importlib.util.find_spec("netCDF4"):
+            engine = "netcdf4"
+        else:
+            engine = "scipy"
+            LOGGER.warning("netCDF4/h5netcdf not found; using scipy backend without compression.")
 
     encoding = None
     if engine in ("netcdf4", "h5netcdf"):
         # Add conservative chunk sizes to avoid oversized HDF chunks.
         u_chunk_time = min(u.shape[1], 10)
         u_chunk_nodes = min(u.shape[2], 65536)
-        x_chunk_nodes = min(x.shape[1], 65536)
+        x_chunk_time = min(x.shape[1], 10)
+        x_chunk_nodes = min(x.shape[2], 65536)
         encoding = {
             "u": {
                 "zlib": True,
@@ -275,7 +278,7 @@ def _write_dataset(
                 "complevel": 4,
                 "shuffle": True,
                 "dtype": "float32",
-                "chunksizes": (1, x_chunk_nodes, x.shape[2]),
+                "chunksizes": (1, x_chunk_time, x_chunk_nodes, x.shape[3]),
             },
             "zone": {
                 "zlib": True,
@@ -315,10 +318,12 @@ def _write_dataset(
             ds_new.attrs["coord_min"] = combined_min.tolist()
             ds_new.attrs["coord_max"] = combined_max.tolist()
 
-        # Concatenate along sample without loading node/time dims into memory
-        # (xarray handles chunked concat lazily when dims align and engine supports it).
-        ds_concat = xr.concat([xr.open_dataset(output_path, engine=engine, chunks={}),
-                               ds_new], dim="sample")
+        # Load existing dataset into memory then close file before rewriting, to avoid open-handle truncate issues.
+        with xr.open_dataset(output_path, engine=engine) as ds_old_for_concat:
+            ds_old_loaded = ds_old_for_concat.load()
+
+        # Concatenate along sample.
+        ds_concat = xr.concat([ds_old_loaded, ds_new], dim="sample")
         try:
             ds_concat.to_netcdf(output_path, mode="w", encoding=encoding, engine=engine, unlimited_dims=("sample",))
         finally:
@@ -377,6 +382,13 @@ def main(argv: Iterable[str] | None = None) -> int:
         action="store_true",
         help="Append to an existing NetCDF (process batches separately, requires netCDF4/h5netcdf)",
     )
+    parser.add_argument(
+        "--engine",
+        type=str,
+        choices=["netcdf4", "h5netcdf", "scipy"],
+        default=None,
+        help="NetCDF engine to use (default: auto, prefers h5netcdf)",
+    )
     parser.add_argument("--verbose", action="store_true", help="Print detailed progress info")
     args = parser.parse_args(argv)
 
@@ -407,22 +419,35 @@ def main(argv: Iterable[str] | None = None) -> int:
     # Determine node/time dims: use existing file when appending, otherwise scan the current batch.
     if args.append and Path(args.output).exists():
         import xarray as xr
-        with xr.open_dataset(args.output) as ds_existing:
-            min_nodes = int(ds_existing.dims["node"])
-            min_time = int(ds_existing.dims["time"])
+        with xr.open_dataset(args.output, engine=args.engine) as ds_existing:
+            # Enforce same node/time dimensions as existing file
+            node_count = int(ds_existing.dims["node"])
+            time_len = int(ds_existing.dims["time"])
+            time_values = np.asarray(ds_existing["time"].values)
+            if time_values.shape[0] != time_len:
+                raise ValueError(
+                    f"time coordinate length mismatch: dims={time_len}, coord={time_values.shape[0]}"
+                )
+            if not np.allclose(time_values, np.round(time_values), atol=1e-6):
+                raise ValueError(
+                    "Existing time coordinate is non-integer; cannot use as HDF5 indices when appending."
+                )
+            time_idx = time_values.astype(np.int64)
+            min_nodes = node_count
+            min_time = time_len
         if args.verbose:
-            LOGGER.debug("[shapes] using existing file dims node=%d, time=%d for append", min_nodes, min_time)
+            LOGGER.debug("[shapes] using existing file dims node=%d, time_len=%d for append", node_count, time_len)
     else:
         if args.verbose:
             LOGGER.debug("[shapes] start computing min node/time across batch runs")
         min_nodes, min_time = _read_shapes(runs, verbose=args.verbose)
+        node_count = min(args.target_nodes, min_nodes)
+        time_idx = np.arange(0, min_time, args.time_stride, dtype=np.int64)
+        if len(time_idx) == 0:
+            raise ValueError("time_stride is too large for available CFD timesteps.")
 
     if args.verbose:
         LOGGER.debug("Processing %d runs in this batch (offset=%d, max=%s)", len(runs), args.sample_offset, args.max_samples)
-    node_count = min(args.target_nodes, min_nodes)
-    time_idx = np.arange(0, min_time, args.time_stride, dtype=np.int64)
-    if len(time_idx) == 0:
-        raise ValueError("time_stride is too large for available CFD timesteps.")
 
     rng = np.random.default_rng(args.seed)
     u_list: List[np.ndarray] = []
@@ -492,6 +517,8 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     u = np.stack(u_list, axis=0)
     x = np.stack(x_list, axis=0)
+    # Expand coordinates to [sample, 1, node, coord] (geometry fixed over time)
+    x = x[:, None, :, :]
     centers_raw = np.stack(center_list, axis=0)
     scales = np.stack(scale_list, axis=0)
     zones = np.stack(zone_list, axis=0) if zone_list else None
@@ -512,6 +539,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         centers_raw=centers_raw,
         scales=scales,
         append=args.append,
+        engine=args.engine,
     )
 
     tags = [_parse_tags(name) for name in sample_names]

@@ -30,7 +30,7 @@
     "dataset": {
         "name": "NS-Gauss",
         "metaname": "incompressible_fluids/NS-Gauss",
-        "base_path": "datasets/time_dep/",
+        "base_path": "/home/azureuser/cloudfiles/code/Users/shubham.sg.gupta.ext/Datasets_for_GAOT/time_dep/",
         "use_metadata_stats": false,
         "use_sparse": false,
         "train_size": 1024,

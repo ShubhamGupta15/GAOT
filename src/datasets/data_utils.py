@@ -210,18 +210,26 @@ class DynamicPairDataset(Dataset):
             target = (u_out - self.stats["u"]["mean"]) / self.stats["u"]["std"]
         elif self.stepper_mode == "residual":
             if self.stats is not None:
-                res_mean = self.stats["res"]["mean"]
-                res_std = self.stats["res"]["std"]
-                target = (u_out - u_in - res_mean) / res_std
+                res_stats = self.stats.get("res")
+                if res_stats is not None:
+                    res_mean = res_stats["mean"]
+                    res_std = res_stats["std"]
+                    target = (u_out - u_in - res_mean) / res_std
+                else:
+                    target = u_out - u_in
             else:
                 target = u_out - u_in
         elif self.stepper_mode == "time_der":
             time_diff_actual = self.time_diffs[pair_idx]
             u_time_der = (u_out - u_in) / time_diff_actual
             if self.stats is not None:
-                der_mean = self.stats["der"]["mean"]
-                der_std = self.stats["der"]["std"]
-                target = (u_time_der - der_mean) / der_std
+                der_stats = self.stats.get("der")
+                if der_stats is not None:
+                    der_mean = der_stats["mean"]
+                    der_std = der_stats["std"]
+                    target = (u_time_der - der_mean) / der_std
+                else:
+                    target = u_time_der
             else:
                 target = u_time_der
         else:
@@ -229,7 +237,11 @@ class DynamicPairDataset(Dataset):
         
         # For variable coordinates, also return coordinate data
         if self.is_variable_coords and self.x_data is not None:
-            x_coord = self.x_data[sample_idx, t_in_idx]
+            # x_data may be [n_samples, n_nodes, coord] (fixed over time) or [n_samples, n_time, n_nodes, coord]
+            if self.x_data.dim() == 3:
+                x_coord = self.x_data[sample_idx]
+            else:
+                x_coord = self.x_data[sample_idx, t_in_idx]
             return input_data, target, x_coord
         else:
             return input_data, target

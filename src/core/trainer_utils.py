@@ -278,7 +278,13 @@ def compute_sequential_stats(u_data: np.ndarray, c_data: Optional[np.ndarray],
     residuals = []
     derivatives = []
     
-    n_samples_subset = min(int(len(u_data) * sample_rate), len(u_data))
+    total_samples = len(u_data)
+    if total_samples == 0:
+        raise ValueError("No training samples available for statistics computation.")
+
+    # Always keep at least one sample so residual/derivative stats exist for small datasets
+    n_samples_subset = max(1, int(np.ceil(total_samples * sample_rate)))
+    n_samples_subset = min(n_samples_subset, total_samples)
     u_subset = u_data[:n_samples_subset]
     for sample_idx in range(n_samples_subset):
         for t_idx in range(min(max_time_diff, u_subset.shape[1] - 1)):

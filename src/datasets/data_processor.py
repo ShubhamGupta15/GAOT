@@ -210,7 +210,10 @@ class DataProcessor:
         
         train_indices = indices[:train_size]
         val_indices = indices[train_size:train_size + val_size]
-        test_indices = indices[-test_size:]
+        if test_size > 0:
+            test_indices = indices[-test_size:]
+        else:
+            test_indices = np.array([], dtype=indices.dtype)
         
         return train_indices, val_indices, test_indices
     

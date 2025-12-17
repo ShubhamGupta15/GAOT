@@ -6,7 +6,7 @@
         "trainer_name": "sequential",
         "train": true,
         "test": false,
-        "ckpt": true
+        "ckpt": false
     },
     "model": {
         "name": "gaot",
@@ -21,7 +21,7 @@
                 "radius": 0.05,
                 "hidden_size": 64,
                 "mlp_layers": 3,
-                "lifting_channels": 64
+                "lifting_channels": 66
             },
             "transformer": {
                 "patch_size": 2,
@@ -35,16 +35,16 @@
         "base_path": "/home/azureuser/cloudfiles/code/Users/shubham.sg.gupta.ext/datasets/time_dep/",
         "use_metadata_stats": false,
         "use_sparse": false,
-        "train_size": 45,
+        "train_size": 39,
         "val_size": 5,
-        "test_size": 0,
+        "test_size": 1,
         "max_time_diff": 14,
         "time_step": 2,
         "coord_scaling": "global_scaling",
         "batch_size": 1,
         "num_workers": 1,
         "shuffle": true,
-        "metric": "final_step",
+        "metric": "all_step",
         "predict_mode": "all",
         "stepper_mode": "time_der",
         "rand_dataset": false
@@ -54,7 +54,7 @@
         "args": {
             "lr": 8e-4,
             "weight_decay": 1e-05,
-            "epoch": 1000,
+            "epoch": 10,
             "loss_scale": 1.0,
             "eval_every_eps": 2,
             "scheduler": "mix",
@@ -64,9 +64,9 @@
         }
     },
     "path": {
-        "ckpt_path": "/home/azureuser/cloudfiles/code/Users/shubham.sg.gupta.ext/.ckpt/examples/time_dep/gis_thermal_split.pt",
+        "ckpt_path": "/home/azureuser/cloudfiles/code/Users/shubham.sg.gupta.ext/GAOT/.ckpt/examples/time_dep/gis_thermal_split.pt",
         "loss_path": ".loss/examples/time_dep/gis_thermal_split.png",
         "result_path": ".results/examples/time_dep/gis_thermal_split.png",
-        "database_path": "/home/azureuser/cloudfiles/code/Users/shubham.sg.gupta.ext/.database/examples/time_dep/gis_thermal_split.csv"
+        "database_path": "/home/azureuser/cloudfiles/code/Users/shubham.sg.gupta.ext/GAOT/.database/examples/time_dep/gis_thermal_split.csv"
     }
 }
