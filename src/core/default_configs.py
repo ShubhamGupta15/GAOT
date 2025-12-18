@@ -71,6 +71,12 @@ class DatasetConfig:
     sample_rate: float = 0.1                                    # Sample rate for point clouds
     use_sparse: bool = False                                    # Use sparse representations (PDEGym datasets)
     rand_dataset: bool = False                                  # Randomize dataset sequence
+    train_indices: Optional[List[int]] = None                  # Explicit train indices
+    val_indices: Optional[List[int]] = None                    # Explicit val indices
+    test_indices: Optional[List[int]] = None                   # Explicit test indices
+    train_names: Optional[List[str]] = None                    # Explicit train sample names
+    val_names: Optional[List[str]] = None                      # Explicit val sample names
+    test_names: Optional[List[str]] = None                     # Explicit test sample names
     
     # Time-dependent dataset parameters
     max_time_diff: int = 14                                     # Maximum time difference for pairs
@@ -95,4 +101,3 @@ class PathConfig:
     loss_path: str = ".loss/test/test.png"                      # Loss curve plot path
     result_path: str = ".result/test/test.png"                  # Result visualization path
     database_path: str = ".database/test/test.csv"              # Experiment database path
-

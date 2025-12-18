@@ -143,14 +143,16 @@ class AdamOptimizer:
         
             pbar.update(1)
 
+            train_loss = total_loss / len(trainer.train_loader)
+            losses.append(train_loss)
+            epochs.append(epoch)
+
+            postfix = {"loss": train_loss}
             if (epoch + 1) % self.eval_every_eps == 0:
-                train_loss = total_loss / len(trainer.train_loader)
-                losses.append(train_loss)
-                epochs.append(epoch)
                 val_loss = trainer.validate(trainer.val_loader)
-                pbar.set_postfix({"loss": train_loss, "val_loss": val_loss})
                 val_losses.append(val_loss)
                 val_epochs.append(epoch)
+                postfix["val_loss"] = val_loss
 
                 if self.early_save_metric == 'val':
                     current_loss = val_loss
@@ -161,6 +163,26 @@ class AdamOptimizer:
                     best_loss = current_loss
                     best_epoch = epoch
                     best_state = deepcopy(trainer.model.state_dict())
+
+            pbar.set_postfix(postfix)
+
+            if losses:
+                if val_losses:
+                    trainer.plot_losses(
+                        epochs=epochs,
+                        losses=losses,
+                        val_epochs=val_epochs,
+                        val_losses=val_losses,
+                        best_epoch=best_epoch,
+                        best_loss=best_loss,
+                    )
+                else:
+                    trainer.plot_losses(
+                        epochs=epochs,
+                        losses=losses,
+                        best_epoch=best_epoch if best_epoch >= 0 else None,
+                        best_loss=best_loss if best_epoch >= 0 else None,
+                    )
         
         if best_state is not None:
             trainer.model.load_state_dict(best_state)
@@ -264,14 +286,16 @@ class AdamWOptimizer:
 
             pbar.update(1)
 
+            train_loss = total_loss.cpu().item() / len(trainer.train_loader)
+            losses.append(train_loss)
+            epochs.append(epoch)
+
+            postfix = {"loss": train_loss}
             if (epoch + 1) % self.eval_every_eps == 0:
-                train_loss = total_loss.cpu().item() / len(trainer.train_loader)
-                losses.append(train_loss)
-                epochs.append(epoch)
                 val_loss = trainer.validate(trainer.val_loader)
-                pbar.set_postfix({"loss": train_loss, "val_loss": val_loss})
                 val_losses.append(val_loss)
                 val_epochs.append(epoch)
+                postfix["val_loss"] = val_loss
 
                 if self.early_save_metric == 'val':
                     current_loss = val_loss
@@ -282,6 +306,26 @@ class AdamWOptimizer:
                     best_loss = current_loss
                     best_epoch = epoch
                     best_state = deepcopy(trainer.model.state_dict())
+
+            pbar.set_postfix(postfix)
+
+            if losses:
+                if val_losses:
+                    trainer.plot_losses(
+                        epochs=epochs,
+                        losses=losses,
+                        val_epochs=val_epochs,
+                        val_losses=val_losses,
+                        best_epoch=best_epoch,
+                        best_loss=best_loss,
+                    )
+                else:
+                    trainer.plot_losses(
+                        epochs=epochs,
+                        losses=losses,
+                        best_epoch=best_epoch if best_epoch >= 0 else None,
+                        best_loss=best_loss if best_epoch >= 0 else None,
+                    )
 
         if best_state is not None:
             trainer.model.load_state_dict(best_state)

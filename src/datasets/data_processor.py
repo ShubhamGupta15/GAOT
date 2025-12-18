@@ -82,11 +82,13 @@ class DataProcessor:
             
             # Load x (coordinate) data
             x_array = self._load_coordinate_data(ds, u_array)
+            sample_names = ds.coords["sample"].values if "sample" in ds.coords else None
         
         return {
             'u': u_array,
             'c': c_array,
-            'x': x_array
+            'x': x_array,
+            'sample_names': sample_names,
         }
     
     def _load_coordinate_data(self, ds: xr.Dataset, u_array: np.ndarray) -> np.ndarray:
@@ -140,6 +142,7 @@ class DataProcessor:
         u_array = raw_data['u']
         c_array = raw_data['c']
         x_array = raw_data['x']
+        sample_names = raw_data.get('sample_names')
         
         # Handle dataset-specific preprocessing
         if self.dataset_config.name in self.poseidon_datasets and self.dataset_config.use_sparse:
@@ -157,7 +160,9 @@ class DataProcessor:
         assert u_array.shape[1] == 1, "Expected num_timesteps to be 1 for static datasets"
         
         # Split data
-        train_indices, val_indices, test_indices = self._get_split_indices(len(u_array))
+        train_indices, val_indices, test_indices = self._get_split_indices(
+            len(u_array), sample_names=sample_names
+        )
         
         u_train = np.ascontiguousarray(u_array[train_indices])
         u_val = np.ascontiguousarray(u_array[val_indices])
@@ -194,14 +199,145 @@ class DataProcessor:
         
         return data_splits
     
-    def _get_split_indices(self, total_samples: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _get_split_indices(
+        self,
+        total_samples: int,
+        sample_names: Optional[Union[np.ndarray, list]] = None
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Get indices for train/val/test splits."""
         train_size = self.dataset_config.train_size
         val_size = self.dataset_config.val_size
         test_size = self.dataset_config.test_size
 
-        assert train_size + val_size + test_size <= total_samples, \
-            "Sum of train, val, and test sizes exceeds total samples"
+        def _normalize_name(value: Union[str, bytes]) -> str:
+            if isinstance(value, bytes):
+                return value.decode("utf-8")
+            return str(value)
+
+        name_to_idx = None
+        if sample_names is not None:
+            name_to_idx = {
+                _normalize_name(name): idx
+                for idx, name in enumerate(sample_names)
+            }
+
+        def _listify(value):
+            if value is None:
+                return []
+            if isinstance(value, (list, tuple, np.ndarray)):
+                return list(value)
+            return [value]
+
+        def _resolve_split(indices_value, names_value, split_name: str) -> np.ndarray:
+            indices = [int(i) for i in _listify(indices_value)]
+            names = _listify(names_value)
+            if names:
+                if name_to_idx is None:
+                    raise ValueError(
+                        f"{split_name} names provided, but dataset has no sample names."
+                    )
+                for name in names:
+                    key = _normalize_name(name)
+                    if key not in name_to_idx:
+                        raise ValueError(f"Unknown sample name '{key}' in {split_name}.")
+                    indices.append(name_to_idx[key])
+
+            seen = set()
+            deduped = []
+            for idx in indices:
+                if idx < 0 or idx >= total_samples:
+                    raise ValueError(
+                        f"{split_name} index {idx} is out of range for {total_samples} samples."
+                    )
+                if idx not in seen:
+                    deduped.append(idx)
+                    seen.add(idx)
+            return np.array(deduped, dtype=np.int64)
+
+        explicit_train = _resolve_split(
+            self.dataset_config.train_indices,
+            self.dataset_config.train_names,
+            "train"
+        )
+        explicit_val = _resolve_split(
+            self.dataset_config.val_indices,
+            self.dataset_config.val_names,
+            "val"
+        )
+        explicit_test = _resolve_split(
+            self.dataset_config.test_indices,
+            self.dataset_config.test_names,
+            "test"
+        )
+
+        explicit_union = set(explicit_train.tolist()) | set(explicit_val.tolist()) | set(explicit_test.tolist())
+        min_required = len(explicit_union)
+        if explicit_train.size == 0:
+            min_required += train_size
+        if explicit_val.size == 0:
+            min_required += val_size
+        if explicit_test.size == 0:
+            min_required += test_size
+        if min_required > total_samples:
+            raise ValueError(
+                "Train/val/test sizes exceed total samples once duplicates are removed."
+            )
+
+        explicit_provided = any(
+            split.size > 0 for split in (explicit_train, explicit_val, explicit_test)
+        )
+
+        if explicit_provided:
+            train_set = set(explicit_train.tolist())
+            val_set = set(explicit_val.tolist())
+            test_set = set(explicit_test.tolist())
+
+            if train_set & val_set:
+                raise ValueError("Explicit train and val splits overlap.")
+            if train_set & test_set:
+                raise ValueError("Explicit train and test splits overlap.")
+
+            used = train_set | val_set | test_set
+            remaining = [idx for idx in range(total_samples) if idx not in used]
+            required = 0
+            if explicit_train.size == 0:
+                required += train_size
+            if explicit_val.size == 0:
+                required += val_size
+            if explicit_test.size == 0:
+                required += test_size
+            if required > len(remaining):
+                raise ValueError(
+                    f"Not enough remaining samples ({len(remaining)}) to fill "
+                    f"train/val/test sizes ({required})."
+                )
+
+            if self.dataset_config.rand_dataset:
+                remaining = np.random.permutation(remaining)
+            else:
+                remaining = np.array(remaining, dtype=np.int64)
+
+            if explicit_train.size == 0:
+                train_indices = remaining[:train_size]
+                remaining = remaining[train_size:]
+            else:
+                train_indices = explicit_train
+
+            if explicit_val.size == 0:
+                val_indices = remaining[:val_size]
+                remaining = remaining[val_size:]
+            else:
+                val_indices = explicit_val
+
+            if explicit_test.size == 0:
+                if test_size > 0:
+                    test_indices = remaining[-test_size:]
+                else:
+                    test_indices = np.array([], dtype=np.int64)
+            else:
+                test_indices = explicit_test
+
+            return train_indices, val_indices, test_indices
         
         if self.dataset_config.rand_dataset:
             indices = np.random.permutation(total_samples)

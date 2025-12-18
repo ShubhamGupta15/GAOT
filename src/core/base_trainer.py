@@ -228,48 +228,37 @@ class BaseTrainer(ABC):
                    best_epoch=None, best_loss=None):
         """Plot training and validation losses."""
         import matplotlib.pyplot as plt
-        
-        if val_losses is None:
-            # plot only train loss
-            fig, ax = plt.subplots(figsize=(8, 6))
-            ax.plot(epochs, losses)
-            ax.scatter([best_epoch], [best_loss], c='r', marker='o', label="best loss")
-            ax.set_xlabel('Epoch')
-            ax.set_ylabel('Loss')
-            ax.set_title('Loss vs Epoch')
-            ax.legend()
-            ax.set_xlim(left=0)
-            if (np.array(losses) > 0).all():
-                ax.set_yscale('log')
-            np.savez(self.path_config.loss_path[:-4] + ".npz", epochs=epochs, losses=losses)
-            plt.savefig(self.path_config.loss_path)
-        else:
-            # also plot valid loss
-            fig, ax = plt.subplots(1, 2, figsize=(12, 6))
-            
-            ax[0].plot(epochs, losses)
-            ax[0].scatter([best_epoch], [best_loss], c='r', marker='o', label="best loss")
-            ax[0].set_xlabel('Epoch')
-            ax[0].set_ylabel('Loss')
-            ax[0].set_title('Loss vs Epoch')
-            ax[0].legend()
-            ax[0].set_xlim(left=0)
-            if (np.array(losses) > 0).all():
-                ax[0].set_yscale('log')
 
-            ax[1].plot(val_epochs, val_losses)
-            ax[1].set_xlabel('Epoch')
-            ax[1].set_ylabel('relative error')
-            ax[1].set_title('Loss vs relative error')
-            ax[1].legend()
-            ax[1].set_xlim(left=0)
-            if (np.array(val_losses) > 0).all():
-                ax[1].set_yscale('log')
-            
-            plt.savefig(self.path_config.loss_path)
-            np.savez(self.path_config.loss_path[:-4] + ".npz", 
-                    epochs=epochs, losses=losses, 
-                    val_epochs=val_epochs, val_losses=val_losses)
+        def _safe_legend(axis):
+            handles, labels = axis.get_legend_handles_labels()
+            if handles and labels:
+                axis.legend()
+        
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.plot(epochs, losses, label="train")
+        if val_losses is not None:
+            ax.plot(val_epochs, val_losses, label="val")
+        if best_epoch is not None and best_loss is not None:
+            ax.scatter([best_epoch], [best_loss], c='r', marker='o', label="best")
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Loss')
+        ax.set_title('Loss vs Epoch')
+        _safe_legend(ax)
+        ax.set_xlim(left=0)
+        if (np.array(losses) > 0).all() and (val_losses is None or (np.array(val_losses) > 0).all()):
+            ax.set_yscale('log')
+
+        if val_losses is None:
+            np.savez(self.path_config.loss_path[:-4] + ".npz", epochs=epochs, losses=losses)
+        else:
+            np.savez(
+                self.path_config.loss_path[:-4] + ".npz",
+                epochs=epochs,
+                losses=losses,
+                val_epochs=val_epochs,
+                val_losses=val_losses,
+            )
+        plt.savefig(self.path_config.loss_path)
 
     def plot_results(self):
         """Plot results (to be implemented by subclasses)."""

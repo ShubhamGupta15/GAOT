@@ -77,6 +77,7 @@ class SequentialDataProcessor(DataProcessor):
             
             # Load x (coordinate) data
             x_array = self._load_sequential_coordinate_data(ds, u_array)
+            sample_names = ds.coords["sample"].values if "sample" in ds.coords else None
             
             # Load or generate time values
             if self.metadata.domain_t is not None:
@@ -100,7 +101,8 @@ class SequentialDataProcessor(DataProcessor):
             'u': u_array,  # [num_samples, num_timesteps, num_nodes, num_channels]
             'c': c_array,  # [num_samples, num_timesteps, num_nodes, num_c_channels] or None
             'x': x_array,  # [num_samples, num_timesteps, num_nodes, coord_dim] or [1, 1, num_nodes, coord_dim]
-            't': self.t_values  # [num_timesteps]
+            't': self.t_values,  # [num_timesteps]
+            'sample_names': sample_names,
         }
     
     def _load_sequential_coordinate_data(self, ds, u_array: np.ndarray) -> np.ndarray:
@@ -151,6 +153,7 @@ class SequentialDataProcessor(DataProcessor):
         c_array = raw_data['c']  # [num_samples, num_timesteps, num_nodes, num_c_channels] or None
         x_array = raw_data['x']  # coordinate data
         t_values = raw_data['t']  # [num_timesteps]
+        sample_names = raw_data.get('sample_names')
         
         # Limit time steps based on max_time_diff
         if self.max_time_diff is not None:
@@ -164,7 +167,9 @@ class SequentialDataProcessor(DataProcessor):
             self.t_values = t_values
         
         # Split data
-        train_indices, val_indices, test_indices = self._get_split_indices(u_array.shape[0])
+        train_indices, val_indices, test_indices = self._get_split_indices(
+            u_array.shape[0], sample_names=sample_names
+        )
 
         u_train = np.ascontiguousarray(u_array[train_indices])
         u_val = np.ascontiguousarray(u_array[val_indices])
