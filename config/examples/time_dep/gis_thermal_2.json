@@ -4,7 +4,7 @@
         "device": "cuda:0",
         "dtype": "torch.float32",
         "trainer_name": "sequential",
-        "train": true,
+        "train": false,
         "test": true,
         "ckpt": false
     },
@@ -36,8 +36,22 @@
         "use_metadata_stats": false,
         "use_sparse": false,
         "train_size": 39,
-        "val_indices": [4,18,26,32,38,44],
-        "test_indices": [4,18,26,32,38,44],
+        "val_indices": [
+            4,
+            18,
+            26,
+            32,
+            38,
+            44
+        ],
+        "test_indices": [
+            4,
+            18,
+            26,
+            32,
+            38,
+            44
+        ],
         "max_time_diff": 14,
         "time_step": 2,
         "coord_scaling": "global_scaling",

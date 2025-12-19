@@ -338,13 +338,22 @@ class SequentialTrainer(BaseTrainer):
             encoder_nbrs = None
             decoder_nbrs = None
         else:
-            # For variable coordinates mode - not yet fully implemented
-            # And time stepper mode like residual, time_der didn't support variable coordinates mode
-            # This is where we would pass variable coordinates and graphs
-            fixed_coord = None
-            encoder_nbrs = None  # TODO: Pass actual encoder graphs
-            decoder_nbrs = None  # TODO: Pass actual decoder graphs
-            raise NotImplementedError("Variable coordinates autoregressive prediction not yet implemented")
+            if coord_batch is None:
+                raise ValueError("coord_batch is required for variable coordinates autoregressive prediction.")
+            # Per-sample fixed coordinates (vx): compute neighbors on the fly when precompute_edges=False.
+            fixed_coord = coord_batch.to(self.device)
+            if fixed_coord.ndim == 4 and fixed_coord.shape[1] == 1:
+                fixed_coord = fixed_coord[:, 0]
+            if fixed_coord.ndim == 2:
+                fixed_coord = fixed_coord.unsqueeze(0)
+            if fixed_coord.ndim != 3:
+                raise ValueError(f"coord_batch must be 2D or 3D after normalization, got {fixed_coord.shape}.")
+            if fixed_coord.shape[1] != x_batch.shape[1]:
+                raise ValueError(
+                    f"coord_batch node count {fixed_coord.shape[1]} does not match input nodes {x_batch.shape[1]}."
+                )
+            encoder_nbrs = None
+            decoder_nbrs = None
         
         return self.model.autoregressive_predict(
             x_batch=x_batch,

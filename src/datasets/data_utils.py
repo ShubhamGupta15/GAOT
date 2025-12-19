@@ -408,7 +408,11 @@ class TestDataset(Dataset):
         
         # For variable coordinates, also return coordinate data
         if self.is_variable_coords and self.x_data is not None:
-            x_coord = self.x_data[idx, t_start_idx]
+            # x_data may be [n_samples, n_nodes, coord] (fixed over time) or [n_samples, n_time, n_nodes, coord]
+            if self.x_data.dim() == 3:
+                x_coord = self.x_data[idx]
+            else:
+                x_coord = self.x_data[idx, t_start_idx]
             return input_data, target_sequence, x_coord
         else:
             return input_data, target_sequence
