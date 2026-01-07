@@ -285,7 +285,14 @@ class StaticTrainer(BaseTrainer):
                 y_denorm = denormalize_data(y_sample, self.data_processor.u_mean.to(self.device), 
                                           self.data_processor.u_std.to(self.device))
                 
-                relative_errors = compute_batch_errors(y_denorm, pred_denorm, self.metadata)
+                normalize_metric = getattr(self.dataset_config, "metric_normalize", False)
+                if normalize_metric:
+                    y_err = y_sample
+                    pred_err = pred
+                else:
+                    y_err = y_denorm
+                    pred_err = pred_denorm
+                relative_errors = compute_batch_errors(y_err, pred_err, self.metadata, normalize=normalize_metric)
                 all_relative_errors.append(relative_errors)
         
         all_relative_errors = torch.cat(all_relative_errors, dim=0)

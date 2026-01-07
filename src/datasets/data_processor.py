@@ -33,6 +33,13 @@ class DataProcessor:
         self.u_std = None
         self.c_mean = None
         self.c_std = None
+
+        # Dataset-level temperature normalization metadata
+        self.temp_norm_mode = "none"
+        self.temp_global_mean = None
+        self.temp_global_std = None
+        self.temp_sample_mean = None
+        self.temp_sample_std = None
         
         # Coordinate scaler
         self.coord_scaler = None
@@ -83,6 +90,19 @@ class DataProcessor:
             # Load x (coordinate) data
             x_array = self._load_coordinate_data(ds, u_array)
             sample_names = ds.coords["sample"].values if "sample" in ds.coords else None
+
+            temp_mode = ds.attrs.get("temp_norm_mode", "none")
+            self.temp_norm_mode = temp_mode
+            if temp_mode == "global":
+                self.temp_global_mean = ds.attrs.get("temp_mean")
+                self.temp_global_std = ds.attrs.get("temp_std")
+                if self.temp_global_mean is None or self.temp_global_std is None:
+                    raise ValueError("Missing temp_mean/temp_std for global normalization.")
+            elif temp_mode == "per-sample":
+                if "temp_mean" not in ds or "temp_std" not in ds:
+                    raise ValueError("Missing temp_mean/temp_std datasets for per-sample normalization.")
+                self.temp_sample_mean = ds["temp_mean"].values
+                self.temp_sample_std = ds["temp_std"].values
         
         return {
             'u': u_array,
@@ -270,18 +290,7 @@ class DataProcessor:
             "test"
         )
 
-        explicit_union = set(explicit_train.tolist()) | set(explicit_val.tolist()) | set(explicit_test.tolist())
-        min_required = len(explicit_union)
-        if explicit_train.size == 0:
-            min_required += train_size
-        if explicit_val.size == 0:
-            min_required += val_size
-        if explicit_test.size == 0:
-            min_required += test_size
-        if min_required > total_samples:
-            raise ValueError(
-                "Train/val/test sizes exceed total samples once duplicates are removed."
-            )
+        debug_overlap = getattr(self.dataset_config, "debug_allow_overlap", False)
 
         explicit_provided = any(
             split.size > 0 for split in (explicit_train, explicit_val, explicit_test)
@@ -292,48 +301,82 @@ class DataProcessor:
             val_set = set(explicit_val.tolist())
             test_set = set(explicit_test.tolist())
 
-            if train_set & val_set:
+            if train_set & val_set and not debug_overlap:
                 raise ValueError("Explicit train and val splits overlap.")
-            if train_set & test_set:
+            if train_set & test_set and not debug_overlap:
                 raise ValueError("Explicit train and test splits overlap.")
 
-            used = train_set | val_set | test_set
-            remaining = [idx for idx in range(total_samples) if idx not in used]
-            required = 0
-            if explicit_train.size == 0:
-                required += train_size
-            if explicit_val.size == 0:
-                required += val_size
-            if explicit_test.size == 0:
-                required += test_size
-            if required > len(remaining):
-                raise ValueError(
-                    f"Not enough remaining samples ({len(remaining)}) to fill "
-                    f"train/val/test sizes ({required})."
-                )
+            if debug_overlap:
+                available = list(range(total_samples))
+                if self.dataset_config.rand_dataset:
+                    available = np.random.permutation(available)
+                else:
+                    available = np.array(available, dtype=np.int64)
 
-            if self.dataset_config.rand_dataset:
-                remaining = np.random.permutation(remaining)
-            else:
-                remaining = np.array(remaining, dtype=np.int64)
+                if explicit_train.size == 0:
+                    if train_size > len(available):
+                        raise ValueError(
+                            f"Not enough samples ({len(available)}) to fill train size ({train_size})."
+                        )
+                    train_indices = available[:train_size]
+                else:
+                    train_indices = explicit_train
+
+                if explicit_val.size == 0:
+                    if val_size > len(available):
+                        raise ValueError(
+                            f"Not enough samples ({len(available)}) to fill val size ({val_size})."
+                        )
+                    val_indices = available[:val_size]
+                else:
+                    val_indices = explicit_val
+
+                if explicit_test.size == 0:
+                    if test_size > len(available):
+                        raise ValueError(
+                            f"Not enough samples ({len(available)}) to fill test size ({test_size})."
+                        )
+                    test_indices = available[:test_size] if test_size > 0 else np.array([], dtype=np.int64)
+                else:
+                    test_indices = explicit_test
+
+                return train_indices, val_indices, test_indices
 
             if explicit_train.size == 0:
-                train_indices = remaining[:train_size]
-                remaining = remaining[train_size:]
+                available_train = [idx for idx in range(total_samples) if idx not in val_set and idx not in test_set]
+                if self.dataset_config.rand_dataset:
+                    available_train = np.random.permutation(available_train)
+                else:
+                    available_train = np.array(available_train, dtype=np.int64)
+                if train_size > len(available_train):
+                    raise ValueError(
+                        f"Not enough samples ({len(available_train)}) to fill train size ({train_size})."
+                    )
+                train_indices = available_train[:train_size]
             else:
                 train_indices = explicit_train
 
+            available_val_test = [idx for idx in range(total_samples) if idx not in set(train_indices.tolist())]
+            if self.dataset_config.rand_dataset:
+                available_val_test = np.random.permutation(available_val_test)
+            else:
+                available_val_test = np.array(available_val_test, dtype=np.int64)
+
             if explicit_val.size == 0:
-                val_indices = remaining[:val_size]
-                remaining = remaining[val_size:]
+                if val_size > len(available_val_test):
+                    raise ValueError(
+                        f"Not enough samples ({len(available_val_test)}) to fill val size ({val_size})."
+                    )
+                val_indices = available_val_test[:val_size]
             else:
                 val_indices = explicit_val
 
             if explicit_test.size == 0:
-                if test_size > 0:
-                    test_indices = remaining[-test_size:]
-                else:
-                    test_indices = np.array([], dtype=np.int64)
+                if test_size > len(available_val_test):
+                    raise ValueError(
+                        f"Not enough samples ({len(available_val_test)}) to fill test size ({test_size})."
+                    )
+                test_indices = available_val_test[:test_size] if test_size > 0 else np.array([], dtype=np.int64)
             else:
                 test_indices = explicit_test
 
@@ -343,14 +386,41 @@ class DataProcessor:
             indices = np.random.permutation(total_samples)
         else:
             indices = np.arange(total_samples)
-        
+
+        if debug_overlap:
+            if test_size > total_samples:
+                raise ValueError("test_size exceeds total samples.")
+            test_indices = indices[:test_size] if test_size > 0 else np.array([], dtype=indices.dtype)
+            available = indices
+
+            if train_size > len(available):
+                raise ValueError(
+                    f"Not enough samples ({len(available)}) to fill train size ({train_size})."
+                )
+            if val_size > len(available):
+                raise ValueError(
+                    f"Not enough samples ({len(available)}) to fill val size ({val_size})."
+                )
+
+            train_indices = available[:train_size]
+            val_indices = available[:val_size]
+            return train_indices, val_indices, test_indices
+
+        if train_size > total_samples:
+            raise ValueError("train_size exceeds total samples.")
         train_indices = indices[:train_size]
-        val_indices = indices[train_size:train_size + val_size]
-        if test_size > 0:
-            test_indices = indices[-test_size:]
-        else:
-            test_indices = np.array([], dtype=indices.dtype)
-        
+        available = indices[train_size:]
+        if val_size > len(available):
+            raise ValueError(
+                f"Not enough samples ({len(available)}) to fill val size ({val_size})."
+            )
+        if test_size > len(available):
+            raise ValueError(
+                f"Not enough samples ({len(available)}) to fill test size ({test_size})."
+            )
+        val_indices = available[:val_size]
+        test_indices = available[:test_size] if test_size > 0 else np.array([], dtype=indices.dtype)
+
         return train_indices, val_indices, test_indices
     
     def _compute_and_apply_normalization(self, u_train, u_val, u_test, 

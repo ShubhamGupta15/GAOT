@@ -200,7 +200,7 @@ def create_directory_structure(path_config):
         os.makedirs(os.path.dirname(path), exist_ok=True)
 
 
-def compute_sequential_stats(u_data: np.ndarray, c_data: Optional[np.ndarray], 
+def compute_sequential_stats(u_data: np.ndarray, c_data: Optional[np.ndarray],
                           t_values: np.ndarray, metadata, max_time_diff: int = 14, time_step: int = 2,
                           sample_rate: float = 1.0, use_metadata_stats: bool = False,
                           use_time_norm: bool = True) -> Dict:

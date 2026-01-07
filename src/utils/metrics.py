@@ -8,7 +8,12 @@ from src.datasets.dataset import Metadata
 
 EPSILON = 1e-10
 
-def compute_batch_errors(gtr: torch.Tensor, prd: torch.Tensor, metadata: Metadata) -> torch.Tensor:
+def compute_batch_errors(
+    gtr: torch.Tensor,
+    prd: torch.Tensor,
+    metadata: Metadata,
+    normalize: bool = True,
+) -> torch.Tensor:
     """
     Compute the per-sample relative L1 errors per variable chunk for a batch.
     
@@ -20,12 +25,8 @@ def compute_batch_errors(gtr: torch.Tensor, prd: torch.Tensor, metadata: Metadat
     Returns:
         torch.Tensor: Relative errors per sample per variable chunk, shape [batch_size, num_chunks]
     """
-    # normalize the data
     active_vars = metadata.active_variables
 
-    mean = torch.tensor(metadata.global_mean, device=gtr.device, dtype=gtr.dtype)[active_vars].reshape(1, 1, 1, -1)
-    std = torch.tensor(metadata.global_std, device=gtr.device, dtype=gtr.dtype)[active_vars].reshape(1, 1, 1, -1)
-    
     original_chunks = metadata.chunked_variables
     chunked_vars = [original_chunks[i] for i in active_vars]
     unique_chunks = sorted(set(chunked_vars))
@@ -35,8 +36,14 @@ def compute_batch_errors(gtr: torch.Tensor, prd: torch.Tensor, metadata: Metadat
 
     chunks = torch.tensor(adjusted_chunks, device=gtr.device, dtype=torch.long)  # Shape: [var]
 
-    gtr_norm = (gtr - mean) / std
-    prd_norm = (prd - mean) / std
+    if normalize:
+        mean = torch.tensor(metadata.global_mean, device=gtr.device, dtype=gtr.dtype)[active_vars].reshape(1, 1, 1, -1)
+        std = torch.tensor(metadata.global_std, device=gtr.device, dtype=gtr.dtype)[active_vars].reshape(1, 1, 1, -1)
+        gtr_norm = (gtr - mean) / std
+        prd_norm = (prd - mean) / std
+    else:
+        gtr_norm = gtr
+        prd_norm = prd
 
     # compute absolute errors and sum over the time and space dimensions
     abs_error = torch.abs(gtr_norm - prd_norm)  # Shape: [batch_size, time, space, var]

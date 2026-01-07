@@ -218,7 +218,7 @@ class SequentialTrainer(BaseTrainer):
         y_batch = y_batch.to(self.device)
         coord_batch = coord_batch.to(self.device)
         latent_tokens_coord = self.latent_tokens_coord.to(self.device)
-        
+        # breakpoint()
         # Handle conditional normalization
         if getattr(self.model_config, 'use_conditional_norm', False):
             pred = self.model(
@@ -386,74 +386,125 @@ class SequentialTrainer(BaseTrainer):
         for mode in modes:
             print(f"Testing in {mode} mode...")
             all_relative_errors = []
+            final_step_idx = min(
+                len(self.t_values) - 1,
+                self.test_loader.dataset.u_data.shape[1] - 1
+            )
+
             if mode == "autoregressive":
-                time_indices = np.arange(0, 15, 2)  # [0, 2, 4, ..., 14]
+                time_indices_list = [np.arange(0, final_step_idx + 1, dtype=np.int64)]
             elif mode == "direct":
-                time_indices = np.array([0, 14])
+                start_indices = np.arange(0, final_step_idx, 10, dtype=np.int64)
+                if start_indices.size == 0:
+                    start_indices = np.array([0], dtype=np.int64)
+                time_indices_list = [
+                    np.array([start_idx, final_step_idx], dtype=np.int64)
+                    for start_idx in start_indices
+                ]
             elif mode == "star":
-                time_indices = np.array([0, 4, 8, 12, 14])
+                time_indices_list = [np.array([0, 4, 8, 12, 14], dtype=np.int64)]
             else:
-                time_indices = np.arange(0, 15, 2)  # Default
-            
-            test_data_splits = {
-                'test': {
-                    'u': self.test_loader.dataset.u_data,
-                    'c': self.test_loader.dataset.c_data,
-                    'x': getattr(self.test_loader.dataset, 'x_data', None),
-                    't': self.t_values
-                }
-            }
+                time_indices_list = [np.arange(0, final_step_idx + 1, dtype=np.int64)]
 
-            test_dataset = TestDataset(
-                u_data=self.test_loader.dataset.u_data,
-                c_data=self.test_loader.dataset.c_data,
-                t_values=self.test_loader.dataset.t_values,
-                metadata=self.metadata,
-                time_indices=time_indices,
-                stats=self.stats,
-                x_data=self.test_loader.dataset.x_data,
-                is_variable_coords=(self.coord_mode == 'vx')
-            )
-            
-            test_loader = torch.utils.data.DataLoader(
-                test_dataset,
-                batch_size=self.dataset_config.batch_size,
-                shuffle=False,
-                num_workers=self.dataset_config.num_workers,
-                collate_fn=collate_sequential_batch
-            )
-            
-            with torch.no_grad():
-                pbar = tqdm(total=len(test_loader), desc=f"Testing ({mode})", colour="blue")
-                
-                for i, batch in enumerate(test_loader):
-                    if self.coord_mode == 'fx':
-                        x_batch, y_batch = batch
-                    else:
-                        x_batch, y_batch, coord_batch = batch
-                    
-                    x_batch = x_batch.to(self.device)
-                    y_batch = y_batch.to(self.device)
-                    
-                    pred = self._call_model_autoregressive_predict(x_batch, time_indices, coord_batch if len(batch) == 3 else None)
-                    
-                    metric_type = getattr(self.dataset_config, 'metric', 'final_step')
-                    if metric_type == "final_step":
-                        relative_errors = compute_batch_errors(
-                            y_batch[:, -1:, :, :], pred[:, -1:, :, :], self.metadata)
-                    elif metric_type == "all_step":
-                        relative_errors = compute_batch_errors(y_batch, pred, self.metadata)
-                    else:
-                        raise ValueError(f"Unknown metric: {metric_type}")
-                    
-                    all_relative_errors.append(relative_errors)
-                    pbar.update(1)
+            test_sample_names = None
+            if getattr(self.data_processor, "sample_names", None) is not None and getattr(self.data_processor, "split_indices", None) is not None:
+                test_indices = self.data_processor.split_indices.get("test")
+                if test_indices is not None:
+                    test_sample_names = [
+                        self._normalize_sample_id(self.data_processor.sample_names[idx])
+                        for idx in test_indices
+                    ]
 
-                    if example_data is None:
-                        coord_batch_for_plot = coord_batch if self.coord_mode == 'vx' and len(batch) == 3 else None
-                        example_data = self._prepare_example_data(x_batch, y_batch, pred, time_indices, coord_batch_for_plot)
-                
-                pbar.close()
+            for time_indices in time_indices_list:
+                test_dataset = TestDataset(
+                    u_data=self.test_loader.dataset.u_data,
+                    c_data=self.test_loader.dataset.c_data,
+                    t_values=self.test_loader.dataset.t_values,
+                    metadata=self.metadata,
+                    time_indices=time_indices,
+                    stats=self.stats,
+                    x_data=self.test_loader.dataset.x_data,
+                    is_variable_coords=(self.coord_mode == 'vx'),
+                    zone_ids=self.test_loader.dataset.zone_id if hasattr(self.test_loader.dataset, "zone_id") else None,
+                    sample_names=test_sample_names
+                )
+
+                test_loader = torch.utils.data.DataLoader(
+                    test_dataset,
+                    batch_size=self.dataset_config.batch_size,
+                    shuffle=False,
+                    num_workers=self.dataset_config.num_workers,
+                    collate_fn=collate_sequential_batch
+                )
+
+                with torch.no_grad():
+                    pbar = tqdm(total=len(test_loader), desc=f"Testing ({mode})", colour="blue")
+
+                    for batch_idx, batch in enumerate(test_loader):
+                        sample_ids = None
+                        zone_ids = None
+                        if self.coord_mode == 'fx':
+                            x_batch, y_batch = batch
+                            coord_batch = None
+                        else:
+                            if len(batch) == 3:
+                                x_batch, y_batch, coord_batch = batch
+                            elif len(batch) == 4:
+                                x_batch, y_batch, coord_batch, sample_ids = batch
+                            else:
+                                x_batch, y_batch, coord_batch, sample_ids, zone_ids = batch
+
+                        x_batch = x_batch.to(self.device)
+                        y_batch = y_batch.to(self.device)
+
+                        pred = self._call_model_autoregressive_predict(
+                            x_batch,
+                            time_indices,
+                            coord_batch if coord_batch is not None else None
+                        )
+
+                        sample_indices = self._resolve_sample_indices(
+                            sample_ids, batch_idx, x_batch.shape[0]
+                        )
+                        pred_denorm = self._denormalize_temperature(pred, sample_indices)
+                        y_denorm = self._denormalize_temperature(y_batch, sample_indices)
+
+                        metric_type = getattr(self.dataset_config, 'metric', 'final_step')
+                        normalize_metric = getattr(self.dataset_config, "metric_normalize", False)
+                        if metric_type == "final_step":
+                            y_err = y_batch[:, -1:, :, :] if normalize_metric else y_denorm[:, -1:, :, :]
+                            pred_err = pred[:, -1:, :, :] if normalize_metric else pred_denorm[:, -1:, :, :]
+                            relative_errors = compute_batch_errors(
+                                y_err, pred_err, self.metadata, normalize=normalize_metric)
+                        elif metric_type == "all_step":
+                            y_err = y_batch if normalize_metric else y_denorm
+                            pred_err = pred if normalize_metric else pred_denorm
+                            relative_errors = compute_batch_errors(y_err, pred_err, self.metadata, normalize=normalize_metric)
+                        else:
+                            raise ValueError(f"Unknown metric: {metric_type}")
+
+                        all_relative_errors.append(relative_errors)
+                        pbar.update(1)
+
+                        self._save_rollouts(
+                            pred=pred_denorm,
+                            y_batch=y_denorm,
+                            x_batch=x_batch,
+                            coord_batch=coord_batch,
+                            time_indices=time_indices,
+                            sample_ids=sample_ids,
+                            sample_indices=sample_indices,
+                            zone_ids=zone_ids if "zone_ids" in locals() else None,
+                            mode=mode
+                        )
+
+                        if example_data is None:
+                            coord_batch_for_plot = coord_batch if self.coord_mode == 'vx' else None
+                            example_data = self._prepare_example_data(
+                                x_batch, y_denorm, pred_denorm, time_indices, coord_batch_for_plot, sample_indices
+                            )
+
+                    pbar.close()
             
             all_relative_errors = torch.cat(all_relative_errors, dim=0)
             final_metric = compute_final_metric(all_relative_errors)
@@ -471,17 +522,19 @@ class SequentialTrainer(BaseTrainer):
         
         print("Sequential model testing complete.")
     
-    def _prepare_example_data(self, x_batch, y_batch, pred, time_indices, coord_batch=None):
+    def _prepare_example_data(self, x_batch, y_batch, pred, time_indices, coord_batch=None, sample_indices=None):
         """Prepare data for plotting."""
         u_dim = self.stats["u"]["mean"].shape[0]
         c_dim = self.stats["c"]["mean"].shape[0] if "c" in self.stats else 0
         if c_dim > 0:
             x_u_part = x_batch[..., :u_dim].cpu() * self.stats["u"]["std"] + self.stats["u"]["mean"]
             x_c_part = x_batch[..., u_dim:u_dim+c_dim].cpu() * self.stats["c"]["std"] + self.stats["c"]["mean"]
-            x_input = np.stack([x_u_part.numpy(), x_c_part.numpy()], axis=-1)
+            x_u_denorm = self._denormalize_temperature(x_u_part, sample_indices).cpu()
+            x_input = np.concatenate([x_u_denorm.numpy(), x_c_part.numpy()], axis=-1)
         else:
             x_u_part = x_batch[..., :u_dim].cpu() * self.stats["u"]["std"] + self.stats["u"]["mean"]
-            x_input = x_u_part.numpy()
+            x_u_denorm = self._denormalize_temperature(x_u_part, sample_indices).cpu()
+            x_input = x_u_denorm.numpy()
         
         if self.coord_mode == 'fx':
             original_coords = self.data_processor.coord_scaler.inverse_transform(self.coord.cpu())
@@ -501,6 +554,163 @@ class SequentialTrainer(BaseTrainer):
             'time_indices': time_indices,
             't_values': self.t_values
         }
+
+    def _normalize_sample_id(self, sample_id) -> str:
+        """Normalize sample id for filenames."""
+        if isinstance(sample_id, bytes):
+            sample_id = sample_id.decode("utf-8")
+        sample_str = str(sample_id)
+        sample_str = sample_str.replace("/", "_").replace(" ", "_")
+        return sample_str
+
+    def _resolve_sample_indices(self, sample_ids, batch_idx: int, batch_size: int) -> list[int]:
+        """Resolve sample indices for the current batch."""
+        if sample_ids is None:
+            start = batch_idx * batch_size
+            return list(range(start, start + batch_size))
+
+        resolved = []
+        name_to_idx = getattr(self.data_processor, "sample_name_to_idx", None)
+        normalized_map = getattr(self, "_sample_name_to_idx_normalized", None)
+        for sample_id in sample_ids:
+            if isinstance(sample_id, bytes):
+                sample_id = sample_id.decode("utf-8")
+            if isinstance(sample_id, (int, np.integer)):
+                resolved.append(int(sample_id))
+                continue
+            sample_str = str(sample_id)
+            if name_to_idx and sample_str in name_to_idx:
+                resolved.append(int(name_to_idx[sample_str]))
+                continue
+            if name_to_idx:
+                if normalized_map is None:
+                    normalized_map = {
+                        self._normalize_sample_id(name): idx
+                        for name, idx in name_to_idx.items()
+                    }
+                    self._sample_name_to_idx_normalized = normalized_map
+                if sample_str in normalized_map:
+                    resolved.append(int(normalized_map[sample_str]))
+                    continue
+            try:
+                resolved.append(int(sample_str))
+            except ValueError as exc:
+                raise ValueError(f"Unknown sample id '{sample_str}'") from exc
+        return resolved
+
+    def _denormalize_temperature(self, data: torch.Tensor, sample_indices: list[int] | None) -> torch.Tensor:
+        """Undo dataset temperature normalization modes."""
+        temp_mode = getattr(self.data_processor, "temp_norm_mode", "none")
+        if temp_mode == "none":
+            return data
+
+        if temp_mode == "global":
+            mean = self.data_processor.temp_global_mean
+            std = self.data_processor.temp_global_std
+            if mean is None or std is None:
+                raise ValueError("Missing temp_mean/temp_std for global normalization.")
+            mean_t = torch.tensor(mean, device=data.device, dtype=data.dtype)
+            std_t = torch.tensor(std, device=data.device, dtype=data.dtype)
+            return data * std_t + mean_t
+
+        if temp_mode == "per-sample":
+            if sample_indices is None:
+                raise ValueError("Sample indices required for per-sample denormalization.")
+            means = self.data_processor.temp_sample_mean
+            stds = self.data_processor.temp_sample_std
+            if means is None or stds is None:
+                raise ValueError("Missing temp_mean/temp_std for per-sample normalization.")
+            if data.ndim == 3:
+                view_shape = (-1, 1, 1)
+            elif data.ndim == 4:
+                view_shape = (-1, 1, 1, 1)
+            else:
+                raise ValueError(f"Unsupported data rank for per-sample denorm: {data.ndim}")
+            mean_t = torch.tensor(means[sample_indices], device=data.device, dtype=data.dtype).view(*view_shape)
+            std_t = torch.tensor(stds[sample_indices], device=data.device, dtype=data.dtype).view(*view_shape)
+            return data * std_t + mean_t
+
+        raise ValueError(f"Unsupported temp_norm_mode: {temp_mode}")
+
+    def _save_rollouts(self, pred, y_batch, x_batch, coord_batch, time_indices, sample_ids, sample_indices, zone_ids, mode):
+        """Save predicted and ground-truth sequences for each sample in the batch."""
+        import os
+        import h5py
+        import numpy as np
+
+        if not getattr(self.dataset_config, "save_rollouts", False):
+            return
+        if mode != "autoregressive":
+            return
+
+        output_dir = getattr(self.path_config, "rollout_dir", None)
+        if not output_dir:
+            output_dir = os.path.dirname(self.path_config.database_path)
+        os.makedirs(output_dir, exist_ok=True)
+
+        u_mean = self.stats["u"]["mean"].to(pred.device)
+        u_std = self.stats["u"]["std"].to(pred.device)
+        u_dim = u_mean.shape[0]
+
+        u_start_norm = x_batch[..., :u_dim]
+        u_start_denorm = u_start_norm * u_std + u_mean
+        u_start_phys = self._denormalize_temperature(u_start_denorm, sample_indices)
+
+        gt_full = torch.cat([u_start_phys[:, None, ...], y_batch], dim=1)
+        pred_full = torch.cat([u_start_phys[:, None, ...], pred], dim=1)
+
+        if self.coord_mode == 'fx':
+            coords = self.coord.to(pred.device).unsqueeze(0).expand(x_batch.shape[0], -1, -1)
+        else:
+            coords = coord_batch.to(pred.device)
+            if coords.ndim == 4 and coords.shape[1] == 1:
+                coords = coords[:, 0]
+        coords_np = coords.detach().cpu().numpy().astype(np.float32)
+
+        dt_label = "0min"
+        if len(time_indices) > 1:
+            diffs = np.diff(self.t_values[time_indices])
+            if np.allclose(diffs, diffs[0]):
+                dt_value = float(diffs[0])
+                dt_label = f"{int(round(dt_value))}min"
+            else:
+                dt_label = "var"
+        t0_idx = int(time_indices[0])
+
+        for i in range(x_batch.shape[0]):
+            sample_id = sample_ids[i] if sample_ids is not None else i
+            safe_id = self._normalize_sample_id(sample_id)
+            filename = f"rollout_{safe_id}_t0={t0_idx}_dt={dt_label}.hdf5"
+            path = os.path.join(output_dir, filename)
+
+            temps = gt_full[i].detach().cpu().numpy().astype(np.float32)
+            temps_pred = pred_full[i].detach().cpu().numpy().astype(np.float32)
+            node_pos = coords_np[i]
+            n_nodes = node_pos.shape[0]
+
+            with h5py.File(path, "w") as f:
+                f.create_dataset("node_pos", data=node_pos)
+                f.create_dataset("temperatures", data=temps)
+                f.create_dataset("temperatures_pred", data=temps_pred)
+                if zone_ids is not None:
+                    f.create_dataset("zone_id", data=zone_ids[i].astype(np.int32))
+
+                zeros_f = np.zeros(n_nodes, dtype=np.float32)
+                zeros_i = np.zeros(n_nodes, dtype=np.int32)
+                f.create_dataset("Cp", data=zeros_f)
+                f.create_dataset("M", data=zeros_f)
+                f.create_dataset("Q", data=zeros_f)
+                f.create_dataset("V", data=zeros_f)
+                f.create_dataset("cp", data=zeros_f)
+                f.create_dataset("cp_vol", data=zeros_f)
+                f.create_dataset("k", data=zeros_f)
+                f.create_dataset("q", data=zeros_f)
+                f.create_dataset("rho", data=zeros_f)
+                f.create_dataset("node_group", data=zeros_i)
+                f.create_dataset("node_types", data=zeros_i)
+                f.create_dataset("edge_src", data=np.zeros(0, dtype=np.int32))
+                f.create_dataset("edge_dst", data=np.zeros(0, dtype=np.int32))
+                f.create_dataset("edge_area", data=np.zeros(0, dtype=np.float32))
     
     def _store_test_results(self, errors_dict, modes):
         """Store test results in config datarow."""
@@ -515,17 +725,29 @@ class SequentialTrainer(BaseTrainer):
     def _plot_test_results(self, example_data):
         """Create and save test result plots."""
         try:
-            if self.metadata.names['c'] and 'c' in self.stats:
+            if getattr(self.dataset_config, "plot_c_in_tests", False) and self.metadata.names['c'] and 'c' in self.stats:
                 # Plot with condition data
-                input_plot = example_data['input'].squeeze(1)
-                gt_with_c = np.stack([
-                    example_data['gt_sequence'][-1], 
-                    example_data['input'][..., -1]
-                ], axis=-1).squeeze(1)
-                pred_with_c = np.stack([
-                    example_data['pred_sequence'][-1], 
-                    example_data['input'][..., -1]
-                ], axis=-1).squeeze(1)
+                u_dim = len(self.metadata.names['u'])
+                input_plot = example_data['input'][..., :u_dim].squeeze(1)
+                c_names = self.metadata.names['c']
+                c_signed = self.metadata.signed['c']
+                c_index = -1
+                if isinstance(c_names, list) and c_names:
+                    c_name = c_names[c_index]
+                    c_sign = c_signed[c_index] if isinstance(c_signed, list) else c_signed
+                else:
+                    c_name = "c"
+                    c_sign = False
+                c_channel = example_data['input'][..., -1]
+                if c_channel.ndim == 1:
+                    c_channel = c_channel[:, None]
+                c_channel = c_channel.squeeze(1)
+                gt_with_c = np.concatenate(
+                    [example_data['gt_sequence'][-1], c_channel], axis=-1
+                ).squeeze(1)
+                pred_with_c = np.concatenate(
+                    [example_data['pred_sequence'][-1], c_channel], axis=-1
+                ).squeeze(1)
                 
                 fig = plot_estimates(
                     u_inp=input_plot,
@@ -533,8 +755,8 @@ class SequentialTrainer(BaseTrainer):
                     u_prd=pred_with_c,
                     x_inp=example_data['coords'],
                     x_out=example_data['coords'],
-                    names=self.metadata.names['u'] + self.metadata.names['c'],
-                    symmetric=self.metadata.signed['u'] + self.metadata.signed['c'],
+                    names=self.metadata.names['u'] + [c_name],
+                    symmetric=self.metadata.signed['u'] + [c_sign],
                     domain=self.metadata.domain_x
                 )
             else:

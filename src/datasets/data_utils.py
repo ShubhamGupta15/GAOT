@@ -5,7 +5,7 @@ Custom dataset classes and data manipulation utilities.
 import torch
 import numpy as np
 from torch.utils.data import Dataset
-from typing import Optional, Callable, List
+from typing import Optional, Callable, List, Sequence
 
 
 class CustomDataset(Dataset):
@@ -322,6 +322,19 @@ def collate_sequential_batch(batch):
         targets = torch.stack(target_list)
         coords = torch.stack(coord_list)
         return inputs, targets, coords
+    elif len(batch[0]) == 4:  # Variable coordinates mode with sample ids
+        input_list, target_list, coord_list, sample_ids = zip(*batch)
+        inputs = torch.stack(input_list)
+        targets = torch.stack(target_list)
+        coords = torch.stack(coord_list)
+        return inputs, targets, coords, list(sample_ids)
+    elif len(batch[0]) == 5:  # Variable coordinates mode with sample ids and zone ids
+        input_list, target_list, coord_list, sample_ids, zone_ids = zip(*batch)
+        inputs = torch.stack(input_list)
+        targets = torch.stack(target_list)
+        coords = torch.stack(coord_list)
+        zones = np.stack(zone_ids)
+        return inputs, targets, coords, list(sample_ids), zones
     else:
         raise ValueError(f"Unexpected batch item length: {len(batch[0])}")
 
@@ -335,7 +348,9 @@ class TestDataset(Dataset):
     def __init__(self, u_data: torch.Tensor, c_data: Optional[torch.Tensor],
                  t_values: torch.Tensor, metadata, time_indices: np.ndarray,
                  stats: dict, x_data: Optional[torch.Tensor] = None,
-                 is_variable_coords: bool = False):
+                 is_variable_coords: bool = False,
+                 zone_ids: Optional[np.ndarray] = None,
+                 sample_names: Optional[Sequence[str]] = None):
         """
         Initialize test dataset.
         
@@ -357,6 +372,8 @@ class TestDataset(Dataset):
         self.time_indices = time_indices
         self.stats = stats
         self.is_variable_coords = is_variable_coords
+        self.sample_names = list(sample_names) if sample_names is not None else None
+        self.zone_ids = zone_ids
         
         self.num_samples = u_data.shape[0]
         self.num_nodes = u_data.shape[2]
@@ -413,7 +430,10 @@ class TestDataset(Dataset):
                 x_coord = self.x_data[idx]
             else:
                 x_coord = self.x_data[idx, t_start_idx]
-            return input_data, target_sequence, x_coord
+            sample_id = self.sample_names[idx] if self.sample_names is not None else idx
+            if self.zone_ids is not None:
+                return input_data, target_sequence, x_coord, sample_id, self.zone_ids[idx]
+            return input_data, target_sequence, x_coord, sample_id
         else:
             return input_data, target_sequence
 

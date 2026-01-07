@@ -6,10 +6,11 @@ The script scans `/mnt/eph0/gis_data/{modules,module_pairs}` for
 `simdata*.hdf5` files, pairs them with the matching geometry file in the
 same `export/` directory, optionally downsamples cells, and writes
 `datasets/time_dep/gis_thermal.nc` in GAOT layout:
-    - u:    [sample, time, node, channel] (temperature)
-    - x:    [sample, node, coord] (cell centers)
-    - zone: [sample, node] (cell zone ids, optional)
-    - volume: [sample, node] (cell volumes, optional)
+    - u:       [sample, time, node, channel] (temperature)
+    - x:       [sample, node, coord] (cell centers)
+    - c:       [sample, time, node, c_feature] (material/source properties)
+    - zone_id: [sample, node] (cell zone ids, optional)
+    - volume:  [sample, node] (cell volumes, optional)
 
 All samples are forced to share the same node count (after downsampling)
 and time axis so GAOT loaders can stack them. Coordinates are shifted to
@@ -20,14 +21,23 @@ Per-sample centers and scales are stored for easy inverse scaling.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import logging
 import re
-import importlib.util
+import sys
 from pathlib import Path
 from typing import Iterable, List, Sequence
 
 import h5py
 import numpy as np
+
+THIS_DIR = Path(__file__).resolve().parent
+if str(THIS_DIR) not in sys.path:
+    sys.path.insert(0, str(THIS_DIR))
+
+from gis_features import C_FEATURE_NAMES, build_c_features, infer_geometry
+from materials import load_component_properties, load_material_properties
+from zone_mapping import load_zone_mappings
 
 LOGGER = logging.getLogger("write_gis_gaot_dataset")
 
@@ -86,6 +96,20 @@ def _gather_runs(root: Path, include_modules: bool, include_pairs: bool, include
             if verbose:
                 LOGGER.debug("[gather] paired %s with %s", record["sim"], record["geom"])
     return runs
+
+
+def _collect_excludes(exclude_values: Sequence[str], exclude_file: Path | None) -> set[str]:
+    excludes: set[str] = set()
+    for value in exclude_values:
+        parts = [p.strip() for p in value.split(",") if p.strip()]
+        excludes.update(parts)
+    if exclude_file is not None and exclude_file.exists():
+        for line in exclude_file.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            excludes.add(line)
+    return excludes
 
 
 def _parse_tags(text: str) -> dict:
@@ -209,14 +233,20 @@ def _write_dataset(
     output_path: Path,
     u: np.ndarray,
     x: np.ndarray,
+    c: np.ndarray | None,
     time_idx: np.ndarray,
     sample_names: List[str],
-    zones: np.ndarray | None,
+    zone_ids: np.ndarray | None,
     volumes: np.ndarray | None,
     global_min_raw: np.ndarray,
     global_max_raw: np.ndarray,
     centers_raw: np.ndarray,
     scales: np.ndarray,
+    temp_norm_mode: str,
+    temp_means: np.ndarray | None,
+    temp_stds: np.ndarray | None,
+    temp_global_mean: float | None,
+    temp_global_std: float | None,
     append: bool = False,
     engine: str | None = None,
 ):
@@ -230,14 +260,23 @@ def _write_dataset(
     ds_new["u"] = (("sample", "time", "node", "channel"), u)
     # x uses a dummy time axis of length 1 to satisfy vx shape [sample, 1, node, coord]
     ds_new["x"] = (("sample", "x_time", "node", "coord"), x)
+    if c is not None:
+        ds_new["c"] = (("sample", "time", "node", "c_feature"), c)
     ds_new["coord_center"] = (("sample", "coord"), centers_raw.astype(np.float32))
     ds_new["coord_scale"] = (("sample",), scales.astype(np.float32))
+    if temp_norm_mode == "per-sample":
+        if temp_means is None or temp_stds is None:
+            raise ValueError("Per-sample normalization requires temp_means and temp_stds.")
+        ds_new["temp_mean"] = (("sample",), temp_means.astype(np.float32))
+        ds_new["temp_std"] = (("sample",), temp_stds.astype(np.float32))
     ds_new = ds_new.assign_coords(
         sample=("sample", sample_names),
         time=("time", time_values),
     )
-    if zones is not None:
-        ds_new["zone"] = (("sample", "node"), zones)
+    if c is not None:
+        ds_new = ds_new.assign_coords(c_feature=("c_feature", C_FEATURE_NAMES))
+    if zone_ids is not None:
+        ds_new["zone_id"] = (("sample", "node"), zone_ids)
     if volumes is not None:
         ds_new["volume"] = (("sample", "node"), volumes)
 
@@ -247,6 +286,14 @@ def _write_dataset(
     ds_new.attrs["coord_scaling_mode"] = "uniform_max_dim_per_sample"
     ds_new.attrs["coord_scale_formula"] = "x_norm = (x_raw - coord_center) * coord_scale ; x_raw = x_norm / coord_scale + coord_center"
     ds_new.attrs["description"] = "GIS CFD temperatures downsampled for GAOT (vx mode)"
+    ds_new.attrs["temp_norm_mode"] = temp_norm_mode
+    if temp_norm_mode == "global":
+        if temp_global_mean is None or temp_global_std is None:
+            raise ValueError("Global normalization requires temp_global_mean and temp_global_std.")
+        ds_new.attrs["temp_mean"] = float(temp_global_mean)
+        ds_new.attrs["temp_std"] = float(temp_global_std)
+    if c is not None:
+        ds_new.attrs["c_features"] = C_FEATURE_NAMES
 
     # Pick a NetCDF backend; fall back to scipy without compression if others unavailable.
     if engine is None:
@@ -280,13 +327,6 @@ def _write_dataset(
                 "dtype": "float32",
                 "chunksizes": (1, x_chunk_time, x_chunk_nodes, x.shape[3]),
             },
-            "zone": {
-                "zlib": True,
-                "complevel": 4,
-                "shuffle": True,
-                "dtype": "int32",
-                "chunksizes": (1, x_chunk_nodes),
-            },
             "volume": {
                 "zlib": True,
                 "complevel": 4,
@@ -295,6 +335,24 @@ def _write_dataset(
                 "chunksizes": (1, x_chunk_nodes),
             },
         }
+        if c is not None:
+            c_chunk_time = min(u.shape[1], 10)
+            c_chunk_nodes = min(u.shape[2], 65536)
+            encoding["c"] = {
+                "zlib": True,
+                "complevel": 4,
+                "shuffle": True,
+                "dtype": "float32",
+                "chunksizes": (1, c_chunk_time, c_chunk_nodes, c.shape[3]),
+            }
+        if zone_ids is not None:
+            encoding["zone_id"] = {
+                "zlib": True,
+                "complevel": 4,
+                "shuffle": True,
+                "dtype": "int32",
+                "chunksizes": (1, x_chunk_nodes),
+            }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -310,6 +368,22 @@ def _write_dataset(
                 raise ValueError(f"time dimension mismatch: existing {ds_old.dims['time']} vs new {ds_new.dims['time']}")
             if ds_old.dims["node"] != ds_new.dims["node"]:
                 raise ValueError(f"node dimension mismatch: existing {ds_old.dims['node']} vs new {ds_new.dims['node']}")
+            old_temp_mode = ds_old.attrs.get("temp_norm_mode", "none")
+            if old_temp_mode != temp_norm_mode:
+                raise ValueError(
+                    f"temp_norm_mode mismatch: existing {old_temp_mode} vs new {temp_norm_mode}"
+                )
+            if temp_norm_mode == "global":
+                old_mean = ds_old.attrs.get("temp_mean")
+                old_std = ds_old.attrs.get("temp_std")
+                if old_mean is not None and old_std is not None:
+                    ds_new.attrs["temp_mean"] = float(old_mean)
+                    ds_new.attrs["temp_std"] = float(old_std)
+                else:
+                    raise ValueError("Existing dataset is missing temp_mean/temp_std for global normalization.")
+            if temp_norm_mode == "per-sample":
+                if "temp_mean" not in ds_old or "temp_std" not in ds_old:
+                    raise ValueError("Existing dataset is missing temp_mean/temp_std for per-sample normalization.")
             # Update attrs with global mins/maxes without loading data
             old_min = np.asarray(ds_old.attrs.get("coord_min", global_min_raw), dtype=np.float64)
             old_max = np.asarray(ds_old.attrs.get("coord_max", global_max_raw), dtype=np.float64)
@@ -359,6 +433,35 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument("--sample-offset", type=int, default=0, help="Skip the first N simulations (for batching)")
     parser.add_argument("--seed", type=int, default=0, help="RNG seed for downsampling")
     parser.add_argument(
+        "--cfd-zones",
+        type=Path,
+        default=Path("/mnt/eph0/gis_data/cfd_zones/cfd_zones_all_models.xlsx"),
+        help="CFD zone mapping (json or xlsx)",
+    )
+    parser.add_argument(
+        "--component-properties",
+        type=Path,
+        default=Path("/mnt/eph0/gis_data/component_properties.xlsx"),
+        help="XLSX file listing component properties",
+    )
+    parser.add_argument(
+        "--material-properties",
+        type=Path,
+        default=Path("/mnt/eph0/gis_data/material_properties.txt"),
+        help="Material property definitions",
+    )
+    parser.add_argument(
+        "--rated-current",
+        type=float,
+        default=3150.0,
+        help="Rated current (A) used to scale Q/q via (I/I_rated)^2",
+    )
+    parser.add_argument(
+        "--no-c-features",
+        action="store_true",
+        help="Disable material/source features in the c array",
+    )
+    parser.add_argument(
 
         "--no-stratify",
         action="store_true",
@@ -378,6 +481,18 @@ def main(argv: Iterable[str] | None = None) -> int:
         help="Ignore /assembly runs under the source root",
     )
     parser.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        help="Exclude samples by rel_name (repeatable or comma-separated).",
+    )
+    parser.add_argument(
+        "--exclude-file",
+        type=Path,
+        default=None,
+        help="Text file with one rel_name per line to exclude (lines starting with # are ignored).",
+    )
+    parser.add_argument(
         "--append",
         action="store_true",
         help="Append to an existing NetCDF (process batches separately, requires netCDF4/h5netcdf)",
@@ -386,10 +501,16 @@ def main(argv: Iterable[str] | None = None) -> int:
         "--engine",
         type=str,
         choices=["netcdf4", "h5netcdf", "scipy"],
-        default=None,
+        default='h5netcdf',
         help="NetCDF engine to use (default: auto, prefers h5netcdf)",
     )
     parser.add_argument("--verbose", action="store_true", help="Print detailed progress info")
+    parser.add_argument(
+        "--temp-norm",
+        choices=["none", "per-sample", "global"],
+        default="none",
+        help="Temperature normalization mode (default: none).",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -407,6 +528,13 @@ def main(argv: Iterable[str] | None = None) -> int:
     if not runs_all:
         LOGGER.warning("No simdata files found. Check the source path and flags.")
         return 1
+    excludes = _collect_excludes(args.exclude, args.exclude_file)
+    if excludes:
+        before = len(runs_all)
+        runs_all = [run for run in runs_all if str(run["rel_name"]) not in excludes]
+        if args.verbose:
+            LOGGER.debug("[exclude] removed %d samples", before - len(runs_all))
+    runs_full = runs_all
     if args.sample_offset:
         runs_all = runs_all[args.sample_offset :]
     if args.max_samples is not None:
@@ -417,6 +545,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         LOGGER.debug("Found %d simdata files after filtering", len(runs))
 
     # Determine node/time dims: use existing file when appending, otherwise scan the current batch.
+    temp_global_mean = None
+    temp_global_std = None
     if args.append and Path(args.output).exists():
         import xarray as xr
         with xr.open_dataset(args.output, engine=args.engine) as ds_existing:
@@ -435,6 +565,16 @@ def main(argv: Iterable[str] | None = None) -> int:
             time_idx = time_values.astype(np.int64)
             min_nodes = node_count
             min_time = time_len
+            if args.temp_norm == "global":
+                existing_mode = ds_existing.attrs.get("temp_norm_mode", "none")
+                if existing_mode != "global":
+                    raise ValueError(
+                        f"Existing dataset uses temp_norm_mode={existing_mode}, cannot append with global."
+                    )
+                temp_global_mean = ds_existing.attrs.get("temp_mean")
+                temp_global_std = ds_existing.attrs.get("temp_std")
+                if temp_global_mean is None or temp_global_std is None:
+                    raise ValueError("Existing dataset is missing temp_mean/temp_std for global normalization.")
         if args.verbose:
             LOGGER.debug("[shapes] using existing file dims node=%d, time_len=%d for append", node_count, time_len)
     else:
@@ -454,12 +594,21 @@ def main(argv: Iterable[str] | None = None) -> int:
     x_list: List[np.ndarray] = []
     zone_list: List[np.ndarray] = []
     vol_list: List[np.ndarray] = []
+    c_list: List[np.ndarray] = []
     sample_names: List[str] = []
 
     global_min = np.full(3, np.inf, dtype=np.float64)
     global_max = np.full(3, -np.inf, dtype=np.float64)
     center_list: List[np.ndarray] = []
     scale_list: List[float] = []
+
+    zone_maps = None
+    component_props = None
+    material_props = None
+    if not args.no_c_features:
+        zone_maps = load_zone_mappings(args.cfd_zones)
+        component_props = load_component_properties(args.component_properties)
+        material_props = load_material_properties(args.material_properties)
 
     if args.verbose:
         LOGGER.debug(
@@ -470,6 +619,63 @@ def main(argv: Iterable[str] | None = None) -> int:
             args.time_stride,
         )
 
+    def _safe_std(value: float) -> float:
+        eps = np.finfo(np.float32).eps
+        return value if value > eps else 1.0
+
+    def _combine_stats(
+        count: int,
+        mean: float,
+        m2: float,
+        sample_mean: float,
+        sample_var: float,
+        sample_count: int,
+    ) -> tuple[int, float, float]:
+        if sample_count == 0:
+            return count, mean, m2
+        if count == 0:
+            return sample_count, sample_mean, sample_var * sample_count
+        delta = sample_mean - mean
+        total = count + sample_count
+        mean = mean + delta * sample_count / total
+        m2 = m2 + sample_var * sample_count + (delta * delta) * count * sample_count / total
+        return total, mean, m2
+
+    if args.temp_norm == "global" and temp_global_mean is None:
+        if args.verbose:
+            LOGGER.debug("[temp_norm] computing global mean/std over %d runs", len(runs_full))
+        stats_rng = np.random.default_rng(args.seed)
+        count = 0
+        mean = 0.0
+        m2 = 0.0
+        for idx, run in enumerate(runs_full, start=1):
+            temps, _, _, _ = _load_sample(
+                run["geom"],
+                run["sim"],
+                node_count=node_count,
+                time_idx=time_idx,
+                rng=stats_rng,
+                stratify=not args.no_stratify,
+                verbose=args.verbose,
+            )
+            flat = temps.astype(np.float64, copy=False).ravel()
+            sample_count = flat.size
+            if sample_count == 0:
+                continue
+            sample_mean = float(flat.mean())
+            sample_var = float(flat.var())
+            count, mean, m2 = _combine_stats(count, mean, m2, sample_mean, sample_var, sample_count)
+            if args.verbose and idx % 10 == 0:
+                LOGGER.debug("[temp_norm] processed %d/%d runs for global stats", idx, len(runs_full))
+        if count == 0:
+            raise ValueError("No temperature values available to compute global stats.")
+        temp_global_mean = mean
+        temp_global_std = _safe_std(np.sqrt(m2 / count))
+        if args.verbose:
+            LOGGER.debug("[temp_norm] global mean=%.6f std=%.6f", temp_global_mean, temp_global_std)
+
+    temp_means: List[float] = []
+    temp_stds: List[float] = []
     for idx, run in enumerate(runs, start=1):
         temps, centers, zones_sel, volumes_sel = _load_sample(
             run["geom"],
@@ -489,6 +695,37 @@ def main(argv: Iterable[str] | None = None) -> int:
                 centers.shape[0],
                 temps.shape[0],
             )
+
+        if args.temp_norm == "per-sample":
+            mean = float(temps.mean())
+            std = _safe_std(float(temps.std()))
+            temps = (temps - mean) / std
+            temp_means.append(mean)
+            temp_stds.append(std)
+        elif args.temp_norm == "global":
+            temps = (temps - float(temp_global_mean)) / float(temp_global_std)
+
+        if not args.no_c_features:
+            if zones_sel is None or volumes_sel is None:
+                raise ValueError("zones and volumes are required to compute c features.")
+            geometry = infer_geometry(run["sim"])
+            if geometry is None:
+                raise ValueError(f"Could not infer geometry from path {run['sim']}")
+            tags = _parse_tags(str(run["rel_name"]))
+            current = tags.get("I")
+            c_features = build_c_features(
+                zones=zones_sel,
+                volumes=volumes_sel,
+                geometry=geometry,
+                current=current,
+                zone_maps=zone_maps,
+                component_props=component_props,
+                material_props=material_props,
+                rated_current=args.rated_current,
+                logger=LOGGER,
+                strict=True,
+            )
+            c_list.append(c_features)
 
         raw_min = centers.min(axis=0)
         raw_max = centers.max(axis=0)
@@ -523,6 +760,13 @@ def main(argv: Iterable[str] | None = None) -> int:
     scales = np.stack(scale_list, axis=0)
     zones = np.stack(zone_list, axis=0) if zone_list else None
     volumes = np.stack(vol_list, axis=0) if vol_list else None
+    c = None
+    if c_list:
+        c = np.stack(c_list, axis=0)
+        c = np.repeat(c[:, None, :, :], len(time_idx), axis=1)
+
+    temp_means_arr = np.asarray(temp_means, dtype=np.float32) if temp_means else None
+    temp_stds_arr = np.asarray(temp_stds, dtype=np.float32) if temp_stds else None
 
     if args.verbose:
         LOGGER.debug("[write] stacking arrays and writing NetCDF")
@@ -530,14 +774,20 @@ def main(argv: Iterable[str] | None = None) -> int:
         args.output,
         u=u,
         x=x,
+        c=c,
         time_idx=time_idx,
         sample_names=sample_names,
-        zones=zones,
+        zone_ids=zones,
         volumes=volumes,
         global_min_raw=global_min,
         global_max_raw=global_max,
         centers_raw=centers_raw,
         scales=scales,
+        temp_norm_mode=args.temp_norm,
+        temp_means=temp_means_arr,
+        temp_stds=temp_stds_arr,
+        temp_global_mean=temp_global_mean,
+        temp_global_std=temp_global_std,
         append=args.append,
         engine=args.engine,
     )

@@ -4,9 +4,9 @@
         "device": "cuda:0",
         "dtype": "torch.float32",
         "trainer_name": "sequential",
-        "train": true,
+        "train": false,
         "test": true,
-        "ckpt": false
+        "ckpt": true
     },
     "model": {
         "name": "gaot",
@@ -18,8 +18,9 @@
         "args": {
             "magno": {
                 "coord_dim": 3,
-                "radius": 0.05,
-                "hidden_size": 64,
+                "radius": 0.06,
+                "scales": [1.0, 2.0],
+                "hidden_size": 128,
                 "mlp_layers": 3,
                 "lifting_channels": 66
             },
@@ -30,30 +31,22 @@
         }
     },
     "dataset": {
-        "name": "gis_thermal",
+        "name": "gis_thermal_sanity",
         "metaname": "industrial_cfd/GIS-Thermal",
         "base_path": "/home/azureuser/cloudfiles/code/Users/shubham.sg.gupta.ext/datasets/time_dep/",
         "use_metadata_stats": false,
         "use_sparse": false,
-        "train_size": 39,
+        "train_indices": [
+            0
+        ],
         "val_indices": [
-            4,
-            18,
-            26,
-            32,
-            38,
-            44
+            0
         ],
         "test_indices": [
-            4,
-            18,
-            26,
-            32,
-            38,
-            44
+            0
         ],
-        "max_time_diff": 60,
-        "time_step": 2,
+        "max_time_diff": 29,
+        "time_step": 1,
         "coord_scaling": "global_scaling",
         "batch_size": 1,
         "num_workers": 1,
@@ -62,27 +55,30 @@
         "predict_mode": "all",
         "stepper_mode": "time_der",
         "rand_dataset": true,
-        "save_rollouts": true
+        "save_rollouts": true,
+        "debug_allow_overlap": true,
+        "plot_c_in_tests": false,
+        "metric_normalize":false
     },
     "optimizer": {
         "name": "adamw",
         "args": {
-            "lr": 8e-4,
-            "weight_decay": 1e-05,
-            "epoch": 100,
+            "lr": 1e-4,
+            "weight_decay": 0,
+            "epoch": 1500,
             "loss_scale": 1.0,
             "eval_every_eps": 2,
             "scheduler": "mix",
-            "max_lr": 1e-3,
-            "min_lr": 1e-4,
+            "max_lr": 1e-4,
+            "min_lr": 5e-5,
             "final_lr": 5e-5
         }
     },
     "path": {
-        "ckpt_path": "/home/azureuser/cloudfiles/code/Users/shubham.sg.gupta.ext/GAOT/.ckpt/examples/time_dep/gis_thermal_split.pt",
-        "loss_path": ".loss/examples/time_dep/gis_thermal_split.png",
-        "result_path": ".results/examples/time_dep/gis_thermal_split.png",
-        "rollout_dir": ".inference/examples/time_dep/gis_thermal",
-        "database_path": "/home/azureuser/cloudfiles/code/Users/shubham.sg.gupta.ext/GAOT/.database/examples/time_dep/gis_thermal_split.csv"
+        "ckpt_path": "/home/azureuser/cloudfiles/code/Users/shubham.sg.gupta.ext/GAOT/.ckpt/examples/time_dep/gis_thermal_sanity_split.pt",
+        "loss_path": ".loss/examples/time_dep/gis_thermal_sanity_split.png",
+        "result_path": ".results/examples/time_dep/gis_thermal_sanity_split.png",
+        "rollout_dir": ".inference/examples/time_dep/gis_thermal_sanity",
+        "database_path": "/home/azureuser/cloudfiles/code/Users/shubham.sg.gupta.ext/GAOT/.database/examples/time_dep/gis_thermal_sanity_split.csv"
     }
 }

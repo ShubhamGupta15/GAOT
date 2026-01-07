@@ -23,6 +23,7 @@ class SequentialDataProcessor(DataProcessor):
         # Additional attributes for temporal data
         self.t_values = None
         self.stats = None
+        self.sample_name_to_idx = None
         
         # Time-related configurations
         self.max_time_diff = dataset_config.max_time_diff
@@ -31,6 +32,8 @@ class SequentialDataProcessor(DataProcessor):
         self.use_time_norm = dataset_config.use_time_norm
         self.use_metadata_stats = dataset_config.use_metadata_stats
         self.sample_rate = dataset_config.sample_rate
+        self.sample_names = None
+        self.split_indices = None
     
     def load_and_process_data(self) -> Tuple[Dict, bool]:
         """
@@ -77,7 +80,26 @@ class SequentialDataProcessor(DataProcessor):
             
             # Load x (coordinate) data
             x_array = self._load_sequential_coordinate_data(ds, u_array)
+            zone_array = ds["zone_id"].values if "zone_id" in ds else None
             sample_names = ds.coords["sample"].values if "sample" in ds.coords else None
+            self.sample_names = sample_names
+            if sample_names is not None:
+                self.sample_name_to_idx = {
+                    str(name): idx for idx, name in enumerate(sample_names)
+                }
+
+            temp_mode = ds.attrs.get("temp_norm_mode", "none")
+            self.temp_norm_mode = temp_mode
+            if temp_mode == "global":
+                self.temp_global_mean = ds.attrs.get("temp_mean")
+                self.temp_global_std = ds.attrs.get("temp_std")
+                if self.temp_global_mean is None or self.temp_global_std is None:
+                    raise ValueError("Missing temp_mean/temp_std for global normalization.")
+            elif temp_mode == "per-sample":
+                if "temp_mean" not in ds or "temp_std" not in ds:
+                    raise ValueError("Missing temp_mean/temp_std datasets for per-sample normalization.")
+                self.temp_sample_mean = ds["temp_mean"].values
+                self.temp_sample_std = ds["temp_std"].values
             
             # Load or generate time values
             if self.metadata.domain_t is not None:
@@ -103,6 +125,7 @@ class SequentialDataProcessor(DataProcessor):
             'x': x_array,  # [num_samples, num_timesteps, num_nodes, coord_dim] or [1, 1, num_nodes, coord_dim]
             't': self.t_values,  # [num_timesteps]
             'sample_names': sample_names,
+            'zone_id': zone_array,  # [num_samples, num_nodes] or None
         }
     
     def _load_sequential_coordinate_data(self, ds, u_array: np.ndarray) -> np.ndarray:
@@ -153,6 +176,7 @@ class SequentialDataProcessor(DataProcessor):
         c_array = raw_data['c']  # [num_samples, num_timesteps, num_nodes, num_c_channels] or None
         x_array = raw_data['x']  # coordinate data
         t_values = raw_data['t']  # [num_timesteps]
+        zone_array = raw_data.get('zone_id')
         sample_names = raw_data.get('sample_names')
         
         # Limit time steps based on max_time_diff
@@ -170,6 +194,11 @@ class SequentialDataProcessor(DataProcessor):
         train_indices, val_indices, test_indices = self._get_split_indices(
             u_array.shape[0], sample_names=sample_names
         )
+        self.split_indices = {
+            "train": train_indices,
+            "val": val_indices,
+            "test": test_indices,
+        }
 
         u_train = np.ascontiguousarray(u_array[train_indices])
         u_val = np.ascontiguousarray(u_array[val_indices])
@@ -191,6 +220,12 @@ class SequentialDataProcessor(DataProcessor):
             # Fixed coordinates - same for all samples
             x_coord = x_array[0, 0]  # [num_nodes, coord_dim]
             x_train = x_val = x_test = x_coord
+
+        zone_train = zone_val = zone_test = None
+        if zone_array is not None:
+            zone_train = np.ascontiguousarray(zone_array[train_indices])
+            zone_val = np.ascontiguousarray(zone_array[val_indices])
+            zone_test = np.ascontiguousarray(zone_array[test_indices])
         
         # Compute statistics for sequential data
         self.stats = self._compute_sequential_stats(u_train, c_train, t_values)
@@ -211,6 +246,9 @@ class SequentialDataProcessor(DataProcessor):
         data_splits['train']['t'] = torch.tensor(t_values, dtype=self.dtype)
         data_splits['val']['t'] = torch.tensor(t_values, dtype=self.dtype)
         data_splits['test']['t'] = torch.tensor(t_values, dtype=self.dtype)
+        data_splits['train']['zone_id'] = zone_train
+        data_splits['val']['zone_id'] = zone_val
+        data_splits['test']['zone_id'] = zone_test
         
         return data_splits
     
@@ -303,6 +341,8 @@ class SequentialDataProcessor(DataProcessor):
             use_time_norm=self.use_time_norm,
             is_variable_coords=is_variable_coords
         )
+        if test_data.get("zone_id") is not None:
+            test_dataset.zone_id = test_data["zone_id"]
         
         loaders['test'] = DataLoader(
             test_dataset,

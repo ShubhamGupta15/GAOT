@@ -71,6 +71,10 @@ class DatasetConfig:
     sample_rate: float = 0.1                                    # Sample rate for point clouds
     use_sparse: bool = False                                    # Use sparse representations (PDEGym datasets)
     rand_dataset: bool = False                                  # Randomize dataset sequence
+    save_rollouts: bool = False                                # Save rollout files during testing
+    debug_allow_overlap: bool = False                          # Allow overlap between all splits for debugging
+    plot_c_in_tests: bool = False                              # Plot c features in test visualizations
+    metric_normalize: bool = False                             # Compute metrics on normalized values
     train_indices: Optional[List[int]] = None                  # Explicit train indices
     val_indices: Optional[List[int]] = None                    # Explicit val indices
     test_indices: Optional[List[int]] = None                   # Explicit test indices
@@ -101,3 +105,4 @@ class PathConfig:
     loss_path: str = ".loss/test/test.png"                      # Loss curve plot path
     result_path: str = ".result/test/test.png"                  # Result visualization path
     database_path: str = ".database/test/test.csv"              # Experiment database path
+    rollout_dir: str = ".rollouts"                              # Rollout output directory
